@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Currency Exchange Tracking Application
+
+Resources:
+  ExchangeRatesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ExchangeRates
+      AttributeDefinitions:
+        - AttributeName: Currency
+          AttributeType: S
+      KeySchema:
+        - AttributeName: Currency
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                Resource: !GetAtt ExchangeRatesTable.Arn
+
+  FetchRatesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: fetch_exchange_rates.lambda_handler
+      Runtime: python3.9
+      Code:
+        ZipFile: |
+          import os
+          import json
+          from dynamodb_service import DynamoDBService
+          from ecb_service import ECBService
+
+          def lambda_handler(event, context):
+              ecb_service = ECBService()
+              dynamodb_service = DynamoDBService(os.environ['TABLE_NAME'])
+
+              try:
+                  data = ecb_service.fetch_exchange_rates()
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': f"Failed to fetch exchange rates: {str(e)}"})
+                  }
+
+              current_date = ecb_service.get_current_date()
+
+              for currency, rate in data['rates'].items():
+                  try:
+                      previous_rate = dynamodb_service.get_previous_rate(currency)
+                      dynamodb_service.update_rate(currency, rate, current_date, previous_rate)
+                  except Exception as e:
+                      return {
+                          'statusCode': 500,
+                          'body': json.dumps({'error': f"Failed to update rate for {currency}: {str(e)}"})
+                      }
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Rates fetched and updated successfully!')
+              }
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  GetExchangeRatesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: get_exchange_rates.lambda_handler
+      Runtime: python3.9
+      Code:
+        ZipFile: |
+          import os
+          import json
+          import boto3
+          from datetime import datetime
+          from botocore.exceptions import ClientError
+
+          class DynamoDBService:
+              def __init__(self, table_name):
+                  self.table_name = table_name
+                  self.dynamodb = boto3.resource('dynamodb')
+                  self.table = self.dynamodb.Table(table_name)
+
+              def get_rates(self):
+                  try:
+                      response = self.table.scan()
+                      return response['Items']
+                  except ClientError as e:
+                      raise Exception(f"Error fetching rates from DynamoDB: {str(e)}")
+
+          def lambda_handler(event, context):
+              dynamodb_service = DynamoDBService(os.environ['TABLE_NAME'])
+              today = datetime.now().strftime('%Y-%m-%d')
+
+              try:
+                  rates_data = dynamodb_service.get_rates()
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': str(e)})
+                  }
+
+              rates = {}
+              for item in rates_data:
+                  if item['Date'] == today:
+                      current_rate = item['Rate']
+                      previous_rate = item.get('PreviousRate', None)
+                      change = current_rate - previous_rate if previous_rate is not None else None
+                      rates[item['Currency']] = {
+                          'current': current_rate,
+                          'change': change
+                      }
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({'rates': rates})
+              }
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  FetchRatesEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: 'rate(1 day)'
+      Targets:
+        - Arn: !GetAtt FetchRatesFunction.Arn
+          Id: FetchRatesFunctionTarget
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: ExchangeRatesAPI
+
+  ExchangeRatesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: exchange-rates
+      RestApiId: !Ref ApiGateway
+
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: GET
+      ResourceId: !Ref ExchangeRatesResource
+      RestApiId: !Ref ApiGateway
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetExchangeRatesFunction.Arn}/invocations
+          - GetExchangeRatesFunction: !Ref GetExchangeRatesFunction
+
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GetExchangeRatesFunction
+      Principal: apigateway.amazonaws.com
+
+  MyCustomResource:
+    Type: Custom::MyCustomResource
+    Properties:
+      ServiceToken: !GetAtt FetchRatesFunction.Arn
+      # Add additional properties if needed
+
+Outputs:
+  FetchRatesFunctionArn:
+    Value: !GetAtt FetchRatesFunction.Arn
+    Description: ARN of the Fetch Exchange Rates Lambda Function
+  GetExchangeRatesFunctionArn:
+    Value: !GetAtt GetExchangeRatesFunction.Arn
+    Description: ARN of the Get Exchange Rates Lambda Function
+  ExchangeRatesTableName:
+    Value: !Ref ExchangeRatesTable
+    Description: Name of the DynamoDB table for storing exchange rates
