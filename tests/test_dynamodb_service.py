@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch, Mock
-from currency_exchange_app.source.dynamodb_service import DynamoDBService
+from source.dynamodb_service import DynamoDBService
 from botocore.exceptions import ClientError
 
 class TestDynamoDBService(unittest.TestCase):
