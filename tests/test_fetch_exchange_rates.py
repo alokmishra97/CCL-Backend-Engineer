@@ -1,7 +1,7 @@
 import os
 import unittest
 from unittest.mock import patch, Mock
-from fetch_exchange_rates import lambda_handler
+from source.fetch_exchange_rates import lambda_handler
 
 
 class TestFetchExchangeRates(unittest.TestCase):
