@@ -4,8 +4,8 @@
 This project provides a currency exchange tracker that fetches rates from the European Central Bank, stores them in DynamoDB, and exposes them via a REST API.
 
 ## Requirements
-boto3
-pytest(to run integration tests)
+1.boto3
+2.pytest(to run integration tests)
 
 ## Directory Structure
 currency_exchange_tracker/
