@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch, Mock
-from currency_exchange_app.source.ecb_service import ECBService
+from source.ecb_service import ECBService
 import requests
 
 
